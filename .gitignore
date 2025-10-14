@@ -1,0 +1,5 @@
+.env
+synthetic_questions.log
+.DS_Store
+.idea/
+pdfs/
