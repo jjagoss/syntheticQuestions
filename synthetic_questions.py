@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.chains.summarize import load_summarize_chain
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -33,13 +33,14 @@ logger = logging.getLogger(__name__)
 
 
 class SyntheticQuestionGenerator:
-    def __init__(self, google_api_key: str = None):
-        """Initialize the question generator with Google API key."""
+    def __init__(self, openai_api_key: str = None):
+        """Initialize the question generator with OpenAI API key."""
         logger.info("Initializing SyntheticQuestionGenerator...")
         
-        self.api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
-        if not self.api_key:
-            raise ValueError("Google API key is required. Set GOOGLE_API_KEY environment variable or pass it directly.")
+        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it directly.")
         
         logger.info("Loading Hugging Face embeddings model (all-MiniLM-L6-v2)...")
         # Use free Hugging Face embeddings - lightweight model for speed
@@ -49,14 +50,14 @@ class SyntheticQuestionGenerator:
         )
         logger.info("✅ Embeddings model loaded successfully")
         
-        logger.info("Initializing Google Gemini LLM...")
-        # Use Google Gemini for text generation
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=self.api_key,
+        logger.info("Initializing OpenAI ChatGPT LLM...")
+        # Use OpenAI GPT-4
+        self.llm = ChatOpenAI(
+            model="gpt-5-mini",
+            api_key=self.openai_api_key,
             temperature=0.7
         )
-        logger.info("✅ Google Gemini LLM initialized successfully")
+        logger.info("✅ OpenAI ChatGPT LLM initialized successfully")
         
         self.vector_store = None
         self.documents = []
@@ -178,19 +179,22 @@ class SyntheticQuestionGenerator:
                 logger.info("   🤖 Summarizing document...")
                 
                 def summarize_docs():
-                    summary_chain = load_summarize_chain(
-                        self.llm,
-                        chain_type="map_reduce",
-                        verbose=False
-                    )
-                    result = summary_chain.invoke({"input_documents": docs})
-                    # Handle different response formats
-                    if isinstance(result, dict) and 'output_text' in result:
-                        return result['output_text']
-                    elif hasattr(result, 'content'):
-                        return result.content
-                    else:
-                        return str(result)
+                    # Combine all document text
+                    combined_text = "\n\n".join([doc.page_content for doc in docs])
+                    
+                    # Create a summarization prompt
+                    summary_prompt = f"""Please provide a comprehensive summary of the following document content focused on 
+                    the experience of disaster survivors:
+
+{combined_text}  # Limit to avoid token limits
+
+Summary:"""
+                    
+                    # Use the LLM directly for summarization
+                    result = self.llm.invoke(summary_prompt)
+                    
+                    # ChatOpenAI returns a message object, get content
+                    return result.content
                 
                 summary = self.retry_with_backoff(summarize_docs)
                 logger.info(f"   ✅ Summary completed ({len(summary)} characters)")
@@ -209,7 +213,7 @@ class SyntheticQuestionGenerator:
                     question_obj = {
                         'question': question,
                         'source_file': source_file,
-                        'summary': summary[:200] + "..." if len(summary) > 200 else summary
+                        'summary': summary
                     }
                     doc_questions.append(question_obj)
                     all_questions.append(question_obj)
@@ -238,7 +242,9 @@ class SyntheticQuestionGenerator:
         question_prompt = PromptTemplate(
             input_variables=["summary", "num_questions"],
             template="""
-            Based on the following document summary, generate {num_questions} diverse and meaningful questions that test understanding of the key concepts, facts, and insights from the document.
+            Based on the following document summary, generate {num_questions} that survivors of the disaster would have
+            about safety, access to services, or any other topics they might have about local, state, and federal government
+            services available to them. The questions should be from the point of view of the disaster survivors.
             
             The questions should be:
             - Clear and well-formed
@@ -258,17 +264,14 @@ class SyntheticQuestionGenerator:
             num_questions=num_questions
         )
         
-        logger.info("   🤖 Calling Google Gemini to generate questions...")
+        logger.info("   🤖 Calling OpenAI to generate questions...")
         try:
             def generate_response():
                 return self.llm.invoke(formatted_prompt)
             
             response = self.retry_with_backoff(generate_response)
-            # Handle response - it might be a message object
-            if hasattr(response, 'content'):
-                response_text = response.content
-            else:
-                response_text = str(response)
+            # ChatOpenAI returns a message object, get content
+            response_text = response.content
             
             logger.info(f"   ✅ Received response from LLM ({len(response_text)} characters)")
             

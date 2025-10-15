@@ -3,3 +3,5 @@ synthetic_questions.log
 .DS_Store
 .idea/
 pdfs/
+__pycache__/
+*csv
